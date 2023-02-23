@@ -1,0 +1,165 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: ECS service fronted by ALB with healthcheck failure
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 172.31.0.0/16
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 172.31.0.0/20
+      AvailabilityZone: 
+        Fn::Select: 
+          - 0
+          - Fn::GetAZs: ""
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 172.31.16.0/20
+      AvailabilityZone: 
+        Fn::Select: 
+          - 1
+          - Fn::GetAZs: ""
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  MyRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+  MyRoute:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref MyRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  MySubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet1
+      RouteTableId: !Ref MyRouteTable
+  MySubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet2
+      RouteTableId: !Ref MyRouteTable
+  ELBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to elb
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow http to elb
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+  MyLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      IpAddressType: ipv4
+      Name: MyALB
+      SecurityGroups: 
+        - !Ref ELBSecurityGroup
+      Subnets: 
+        - !Ref Subnet1
+        - !Ref Subnet2
+  MyTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: MyTargets
+      TargetType: ip
+      Protocol: HTTP
+      Port: 80
+      VpcId: !Ref VPC
+  HTTPlistener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      DefaultActions:
+        - Type: "forward"
+          TargetGroupArn: !Ref MyTargetGroup
+      LoadBalancerArn: !Ref MyLoadBalancer
+      Port: 80
+      Protocol: "HTTP"
+  ECSCluster:
+    Type: 'AWS::ECS::Cluster'
+    Properties:
+      ClusterName: MyFargateCluster
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 1
+  ECSTaskDefinition:
+    Type: 'AWS::ECS::TaskDefinition'
+    Properties:
+      ContainerDefinitions:
+        - Name: first-run-task
+          Image: 'httpd:2.4'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+          Environment:
+            - Name: entryPoint
+              Value: 'sh, -c'
+            - Name: command
+              Value: >-
+                /bin/sh -c \"echo '<html> <head> <title>Amazon ECS Sample
+                App</title> <style>body {margin-top: 40px; background-color:
+                #333;} </style> </head><body> <div
+                style=color:white;text-align:center> <h1>Amazon ECS Sample
+                App</h1> <h2>Congratulations!</h2> <p>Your application is now
+                running on a container in Amazon ECS.</p> </div></body></html>'
+                >  /usr/local/apache2/htdocs/index.html && httpd-foreground\"
+          EnvironmentFiles: []
+      Family: first-run-task
+      Cpu: 1 vCPU
+      Memory: 3 GB
+      NetworkMode: awsvpc
+      RequiresCompatibilities: 
+        - FARGATE
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: 
+      - MyTargetGroup
+      - HTTPlistener
+    Properties: 
+      Cluster: !Ref ECSCluster
+      DesiredCount: 1
+      TaskDefinition: !Ref ECSTaskDefinition
+      LoadBalancers:
+        - TargetGroupArn: !Ref MyTargetGroup
+          ContainerPort: 80
+          ContainerName: first-run-task
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups: 
+            - !Ref TaskSecurityGroup
+          Subnets:
+            - !Ref Subnet1
+            - !Ref Subnet2
+      LaunchType: FARGATE
+      ServiceName: 'simple-app-service'
+  
